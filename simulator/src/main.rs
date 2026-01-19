@@ -57,6 +57,28 @@ fn main() {
     };
 
     // Decode ResultMeta XDR
+<<<<<<< HEAD
+    // Decode ResultMeta XDR
+    eprintln!("Debug: Received ResultMetaXdr len: {}", request.result_meta_xdr.len());
+    
+    let _result_meta = if request.result_meta_xdr.is_empty() {
+        eprintln!("Warning: ResultMetaXdr is empty. Host storage may be incomplete.");
+        None 
+    } else {
+        match base64::engine::general_purpose::STANDARD.decode(&request.result_meta_xdr) {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    eprintln!("Warning: ResultMetaXdr decoded to 0 bytes.");
+                    None
+                } else {
+                    match soroban_env_host::xdr::TransactionResultMeta::from_xdr(&bytes, soroban_env_host::xdr::Limits::none()) {
+                        Ok(meta) => Some(meta),
+                        Err(e) => {
+                            eprintln!("Warning: Failed to parse ResultMeta XDR: {}. Proceeding with empty storage.", e);
+                            None
+                        }
+                    }
+=======
     let _result_meta = if request.result_meta_xdr.is_empty() {
         eprintln!("Warning: ResultMetaXdr is empty. Host storage will be empty.");
         None 
@@ -66,6 +88,7 @@ fn main() {
                 Ok(meta) => Some(meta),
                 Err(e) => {
                     return send_error(format!("Failed to parse ResultMeta XDR: {}", e));
+>>>>>>> origin/main
                 }
             },
             Err(e) => {
