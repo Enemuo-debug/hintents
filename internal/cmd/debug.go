@@ -8,6 +8,7 @@ import (
 	"github.com/dotandev/hintents/internal/rpc"
 	"github.com/dotandev/hintents/internal/session"
 	"github.com/dotandev/hintents/internal/simulator"
+	"github.com/dotandev/hintents/internal/tokenflow"
 	"github.com/spf13/cobra"
 )
 
@@ -116,6 +117,20 @@ Example:
 			if len(simResp.Logs) > 5 {
 				fmt.Printf("    ... and %d more\n", len(simResp.Logs)-5)
 			}
+		}
+
+		// Token flow summary (native XLM + Soroban SAC via diagnostic events in ResultMetaXdr)
+		if report, err := tokenflow.BuildReport(txResp.EnvelopeXdr, txResp.ResultMetaXdr); err != nil {
+			fmt.Printf("\nToken Flow Summary: (failed to parse: %v)\n", err)
+		} else if len(report.Agg) == 0 {
+			fmt.Printf("\nToken Flow Summary: no transfers/mints detected\n")
+		} else {
+			fmt.Printf("\nToken Flow Summary:\n")
+			for _, line := range report.SummaryLines() {
+				fmt.Printf("  %s\n", line)
+			}
+			fmt.Printf("\nToken Flow Chart (Mermaid):\n")
+			fmt.Println(report.MermaidFlowchart())
 		}
 
 		// Serialize simulation request/response for session storage
