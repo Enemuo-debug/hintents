@@ -98,7 +98,7 @@ func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationRe
 	logger.Logger.Debug("Simulator execution completed", "stdout_size", stdout.Len(), "stderr_size", stderr.Len())
 
 	// Deserialize Response
-	ctx, unmarshalSpan := tracer.Start(ctx, "unmarshal_response")
+	_, unmarshalSpan := tracer.Start(ctx, "unmarshal_response")
 	var resp SimulationResponse
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		unmarshalSpan.RecordError(err)

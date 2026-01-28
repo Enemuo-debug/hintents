@@ -32,7 +32,7 @@ func main() {
 	defer rootSpan.End()
 
 	// Simulate nested operations
-	ctx, childSpan := tracer.Start(ctx, "child_operation")
+	_, childSpan := tracer.Start(ctx, "child_operation")
 	childSpan.SetAttributes(
 		attribute.String("operation.name", "test_operation"),
 		attribute.Int("operation.count", 42),

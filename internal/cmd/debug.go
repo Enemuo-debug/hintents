@@ -79,7 +79,7 @@ Example:
 		ctx, fetchSpan := tracer.Start(ctx, "fetch_transaction")
 		resp, err := client.GetTransaction(ctx, txHash)
 		fetchSpan.End()
-		
+
 		if err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to fetch transaction: %w", err)

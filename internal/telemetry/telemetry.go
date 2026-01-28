@@ -57,7 +57,7 @@ func Init(ctx context.Context, config Config) (func(), error) {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		tp.Shutdown(ctx)
+		_ = tp.Shutdown(ctx) // Ignore error in cleanup
 	}, nil
 }
 

@@ -28,7 +28,7 @@ func TestInit(t *testing.T) {
 		t.Logf("Expected error when no OTLP endpoint available: %v", err)
 		return
 	}
-	
+
 	// Test that tracer is available
 	tracer := GetTracer()
 	if tracer == nil {

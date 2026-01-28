@@ -86,7 +86,7 @@ type TransactionResponse struct {
 // GetTransaction fetches the transaction details and full XDR data
 func (c *Client) GetTransaction(ctx context.Context, hash string) (*TransactionResponse, error) {
 	tracer := telemetry.GetTracer()
-	ctx, span := tracer.Start(ctx, "rpc_get_transaction")
+	_, span := tracer.Start(ctx, "rpc_get_transaction")
 	span.SetAttributes(
 		attribute.String("transaction.hash", hash),
 		attribute.String("network", string(c.Network)),
