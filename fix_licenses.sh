@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Standard Apache 2.0 Header
-HEADER="// Copyright 2026 dotandev
+HEADER="// Copyright (c) 2026 dotandev
 //
 // Licensed under the Apache License, Version 2.0 (the \"License\");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ HEADER="// Copyright 2026 dotandev
 // See the License for the specific language governing permissions and
 // limitations under the License."
 
-# The list of files that failed in your CI log
+# The FULL list of 45 failing files (including the new gasmodel ones)
 FILES=(
 "internal/decoder/ci_test.go"
 "internal/telemetry/telemetry_test.go"
@@ -32,6 +32,10 @@ FILES=(
 "internal/localization/localizer.go"
 "internal/localization/messages.go"
 "internal/localization/localizer_test.go"
+"internal/gasmodel/types.go"
+"internal/gasmodel/validator.go"
+"internal/gasmodel/parser_test.go"
+"internal/gasmodel/parser.go"
 "internal/ipc/types.go"
 "internal/authtrace/types.go"
 "internal/authtrace/tracker_test.go"
@@ -64,8 +68,8 @@ echo "Starting license fix..."
 
 for FILE in "${FILES[@]}"; do
     if [ -f "$FILE" ]; then
-        # Check if the file already has the header to avoid double-pasting
-        if ! grep -q "Apache License" "$FILE"; then
+        # Check if the file has the header (checking for "Licensed under")
+        if ! grep -q "Licensed under the Apache License" "$FILE"; then
             echo "Adding header to $FILE"
             # Create temp file with header + original content
             echo -e "$HEADER\n\n$(cat $FILE)" > "$FILE"
