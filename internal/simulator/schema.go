@@ -71,7 +71,8 @@ type SimulationResponse struct {
 	Logs             []string             `json:"logs,omitempty"`              // Host debug logs
 	Flamegraph       string               `json:"flamegraph,omitempty"`        // SVG flamegraph
 	AuthTrace        *authtrace.AuthTrace `json:"auth_trace,omitempty"`
-	BudgetUsage      *BudgetUsage         `json:"budget_usage,omitempty"` // Resource consumption metrics
+	BudgetUsage      *BudgetUsage         `json:"budget_usage,omitempty"`      // Resource consumption metrics
+	ProtocolVersion  *uint32              `json:"protocol_version,omitempty"`   // Protocol version used
 }
 
 type CategorizedEvent struct {
