@@ -1,45 +1,33 @@
-// Copyright 2025 Erst Users
-// SPDX-License-Identifier: Apache-2.0
-
-mod theme;
-mod config;
-mod cli;
-mod ipc;
-mod gas_optimizer;
+// Copyright (c) 2026 dotandev
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use soroban_env_host::events::Events;
 use soroban_env_host::xdr::ReadXdr;
 use std::collections::HashMap;
 use std::io::{self, Read};
-use std::panic;
 
-use gas_optimizer::{BudgetMetrics, GasOptimizationAdvisor, OptimizationReport};
+// -----------------------------------------------------------------------------
+// Data Structures
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct SimulationRequest {
     envelope_xdr: String,
     result_meta_xdr: String,
+    // Key XDR -> Entry XDR
     ledger_entries: Option<HashMap<String, String>>,
-    timestamp: Option<i64>,
-    ledger_sequence: Option<u32>,
-    // Optional: Path to local WASM file for local replay
-    wasm_path: Option<String>,
-    // Optional: Mock arguments for local replay (JSON array of strings)
-    mock_args: Option<Vec<String>>,
-    profile: Option<bool>,
-    #[serde(default)]
-    enable_optimization_advisor: bool,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct CategorizedEvent {
-    event_type: String,
-    contract_id: Option<String>,
-    topics: Vec<String>,
-    data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,128 +35,18 @@ struct SimulationResponse {
     status: String,
     error: Option<String>,
     events: Vec<String>,
-    categorized_events: Vec<CategorizedEvent>,
     logs: Vec<String>,
-    flamegraph: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    optimization_report: Option<OptimizationReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    budget_usage: Option<BudgetUsage>,
 }
 
-#[derive(Debug, Serialize)]
-struct BudgetUsage {
-    cpu_instructions: u64,
-    memory_bytes: u64,
-    operations_count: usize,
-}
-
-fn categorize_event_for_analyzer(
-    event: &soroban_env_host::events::HostEvent,
-) -> Result<String, String> {
-    use soroban_env_host::xdr::{ContractEventBody, ContractEventType, ScVal};
-
-    let contract_id = match &event.event.contract_id {
-        Some(id) => format!("{:?}", id),
-        None => "unknown".to_string(),
-    };
-
-    let event_type_str = match &event.event.type_ {
-        ContractEventType::Contract => "contract",
-        ContractEventType::System => "system",
-        ContractEventType::Diagnostic => "diagnostic",
-    };
-
-    let (topics, _data_val) = match &event.event.body {
-        ContractEventBody::V0(v0) => (&v0.topics, &v0.data),
-    };
-
-    let event_json = if let Some(first_topic) = topics.get(0) {
-        let topic_str = format!("{:?}", first_topic);
-
-        if topic_str.contains("require_auth") {
-            let address = if let ScVal::Address(addr) = first_topic {
-                format!("{:?}", addr)
-            } else {
-                "unknown".to_string()
-            };
-
-            json!({
-                "type": "auth",
-                "contract": contract_id,
-                "address": address,
-                "event_type": event_type_str,
-            })
-            .to_string()
-        } else if topic_str.contains("set")
-            || topic_str.contains("write")
-            || topic_str.contains("storage")
-        {
-            json!({
-                "type": "storage_write",
-                "contract": contract_id,
-                "event_type": event_type_str,
-            })
-            .to_string()
-        } else if topic_str.contains("call") || topic_str.contains("invoke") {
-            if let ScVal::Symbol(sym) = first_topic {
-                json!({
-                    "type": "contract_call",
-                    "contract": contract_id,
-                    "function": sym.to_string(),
-                    "event_type": event_type_str,
-                })
-                .to_string()
-            } else {
-                json!({
-                    "type": "contract_call",
-                    "contract": contract_id,
-                    "event_type": event_type_str,
-                })
-                .to_string()
-            }
-        } else {
-            json!({
-                "type": "other",
-                "contract": contract_id,
-                "event_type": event_type_str,
-            })
-            .to_string()
-        }
-    } else {
-        json!({
-            "type": "other",
-            "contract": contract_id,
-            "event_type": event_type_str,
-        })
-        .to_string()
-    };
-
-    Ok(event_json)
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct StructuredError {
-    error_type: String,
-    message: String,
-    details: Option<String>,
-}
+// -----------------------------------------------------------------------------
+// Main Execution
+// -----------------------------------------------------------------------------
 
 fn main() {
     // Read JSON from Stdin
     let mut buffer = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut buffer) {
-        let res = SimulationResponse {
-            status: "error".to_string(),
-            error: Some(format!("Failed to read stdin: {}", e)),
-            events: vec![],
-            categorized_events: vec![],
-            logs: vec![],
-            flamegraph: None,
-            optimization_report: None,
-            budget_usage: None,
-        };
-        println!("{}", serde_json::to_string(&res).unwrap());
+        eprintln!("Failed to read stdin: {}", e);
         return;
     }
 
@@ -176,31 +54,15 @@ fn main() {
     let request: SimulationRequest = match serde_json::from_str(&buffer) {
         Ok(req) => req,
         Err(e) => {
-            let res = SimulationResponse {
-                status: "error".to_string(),
-                error: Some(format!("Invalid JSON: {}", e)),
-                events: vec![],
-                categorized_events: vec![],
-                logs: vec![],
-                flamegraph: None,
-                optimization_report: None,
-                budget_usage: None,
-            };
-            println!("{}", serde_json::to_string(&res).unwrap());
-            return;
+            return send_error(format!("Invalid JSON: {}", e));
         }
     };
-
-    // Check if this is a local WASM replay (no network data)
-    if let Some(wasm_path) = &request.wasm_path {
-        return run_local_wasm_replay(wasm_path, &request.mock_args);
-    }
 
     // Decode Envelope XDR
     let envelope = match base64::engine::general_purpose::STANDARD.decode(&request.envelope_xdr) {
         Ok(bytes) => match soroban_env_host::xdr::TransactionEnvelope::from_xdr(
-            &bytes,
-            soroban_env_host::xdr::Limits::none(),
+            bytes,
+            &soroban_env_host::xdr::Limits::none(),
         ) {
             Ok(env) => env,
             Err(e) => {
@@ -217,52 +79,33 @@ fn main() {
     host.set_diagnostic_level(soroban_env_host::DiagnosticLevel::Debug)
         .unwrap();
 
-    // Override Ledger Info if provided
-    if request.timestamp.is_some() || request.ledger_sequence.is_some() {
-        host.with_mut_ledger_info(|ledger_info| {
-            if let Some(ts) = request.timestamp {
-                ledger_info.timestamp = ts as u64;
-            }
-            if let Some(seq) = request.ledger_sequence {
-                ledger_info.sequence_number = seq;
-            }
-        })
-        .unwrap();
-    }
-    // Populate Host Storage
     let mut loaded_entries_count = 0;
+
+    // Populate Host Storage
     if let Some(entries) = &request.ledger_entries {
         for (key_xdr, entry_xdr) in entries {
-            // Decode Key
             let _key = match base64::engine::general_purpose::STANDARD.decode(key_xdr) {
-                Ok(b) => match soroban_env_host::xdr::LedgerKey::from_xdr(
-                    &b,
-                    soroban_env_host::xdr::Limits::none(),
-                ) {
+                Ok(b) => match soroban_env_host::xdr::LedgerKey::from_xdr(b, &soroban_env_host::xdr::Limits::none()) {
                     Ok(k) => k,
                     Err(e) => return send_error(format!("Failed to parse LedgerKey XDR: {}", e)),
                 },
                 Err(e) => return send_error(format!("Failed to decode LedgerKey Base64: {}", e)),
             };
 
-            // Decode Entry
             let _entry = match base64::engine::general_purpose::STANDARD.decode(entry_xdr) {
-                Ok(b) => match soroban_env_host::xdr::LedgerEntry::from_xdr(
-                    &b,
-                    soroban_env_host::xdr::Limits::none(),
-                ) {
+                Ok(b) => match soroban_env_host::xdr::LedgerEntry::from_xdr(b, &soroban_env_host::xdr::Limits::none()) {
                     Ok(e) => e,
                     Err(e) => return send_error(format!("Failed to parse LedgerEntry XDR: {}", e)),
                 },
                 Err(e) => return send_error(format!("Failed to decode LedgerEntry Base64: {}", e)),
             };
-
-            // In real implementation, we'd inject into host storage here.
             loaded_entries_count += 1;
         }
     }
 
-    // Extract Operations from Envelope
+    let mut invocation_logs = vec![];
+
+    // Extract Operations and Simulate
     let operations = match &envelope {
         soroban_env_host::xdr::TransactionEnvelope::Tx(tx_v1) => &tx_v1.tx.operations,
         soroban_env_host::xdr::TransactionEnvelope::TxV0(tx_v0) => &tx_v0.tx.operations,
@@ -271,222 +114,80 @@ fn main() {
         },
     };
 
-    // Wrap the operation execution in panic protection
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        execute_operations(&host, operations)
-    }));
-
-    // Budget and Reporting
-    let budget = host.budget_cloned();
-    let cpu_insns = budget.get_cpu_insns_consumed().unwrap_or(0);
-    let mem_bytes = budget.get_mem_bytes_consumed().unwrap_or(0);
-
-    let budget_usage = BudgetUsage {
-        cpu_instructions: cpu_insns,
-        memory_bytes: mem_bytes,
-        operations_count: operations.as_slice().len(),
-    };
-
-    let optimization_report = if request.enable_optimization_advisor {
-        let advisor = GasOptimizationAdvisor::new();
-        let metrics = BudgetMetrics {
-            cpu_instructions: budget_usage.cpu_instructions,
-            memory_bytes: budget_usage.memory_bytes,
-            total_operations: budget_usage.operations_count,
-        };
-        Some(advisor.analyze(&metrics))
-    } else {
-        None
-    };
-
-    let mut flamegraph_svg = None;
-    if request.profile.unwrap_or(false) {
-        // Simple simulated flamegraph for demonstration
-        let folded_data = format!("Total;CPU {}\nTotal;Memory {}\n", cpu_insns, mem_bytes);
-        let mut result = Vec::new();
-        let mut options = inferno::flamegraph::Options::default();
-        options.title = "Soroban Resource Consumption".to_string();
-        
-        if let Err(e) = inferno::flamegraph::from_reader(&mut options, folded_data.as_bytes(), &mut result) {
-            eprintln!("Failed to generate flamegraph: {}", e);
-        } else {
-            flamegraph_svg = Some(String::from_utf8_lossy(&result).to_string());
-        }
-    }
-
-    match result {
-        Ok(Ok(exec_logs)) => {
-            let events = match host.get_events() {
-                Ok(evs) => evs.0.iter().map(|e| format!("{:?}", e)).collect(),
-                Err(_) => vec!["Failed to retrieve events".to_string()],
-            };
-
-            // Capture categorized events for analyzer
-            let categorized_events = match host.get_events() {
-                Ok(evs) => categorize_events(&evs),
-                Err(_) => vec![],
-            };
-
-            let mut final_logs = vec![
-                format!("Host Initialized with Budget: {:?}", budget),
-                format!("Loaded {} Ledger Entries", loaded_entries_count),
-            ];
-            final_logs.extend(exec_logs);
-
-            let response = SimulationResponse {
-                status: "success".to_string(),
-                error: None,
-                events,
-                categorized_events,
-                logs: final_logs,
-                flamegraph: flamegraph_svg,
-                optimization_report,
-                budget_usage: Some(budget_usage),
-            };
-
-            println!("{}", serde_json::to_string(&response).unwrap());
-        }
-        Ok(Err(host_error)) => {
-            // Host error during execution (e.g., contract trap, validation failure)
-            let structured_error = StructuredError {
-                error_type: "HostError".to_string(),
-                message: format!("{:?}", host_error),
-                details: Some(format!(
-                    "Contract execution failed with host error: {:?}",
-                    host_error
-                )),
-            };
-
-            let response = SimulationResponse {
-                status: "error".to_string(),
-                error: Some(serde_json::to_string(&structured_error).unwrap()),
-                events: vec![],
-                categorized_events: vec![],
-                logs: vec![],
-                flamegraph: None,
-                optimization_report: None,
-                budget_usage: None,
-            };
-
-            println!("{}", serde_json::to_string(&response).unwrap());
-        }
-        Err(panic_info) => {
-            let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "Unknown panic".to_string()
-            };
-
-            let response = SimulationResponse {
-                status: "error".to_string(),
-                error: Some(format!("Simulator panicked: {}", panic_msg)),
-                events: vec![],
-                categorized_events: vec![],
-                logs: vec![format!("PANIC: {}", panic_msg)],
-                flamegraph: None,
-                optimization_report: None,
-                budget_usage: None,
-            };
-            println!("{}", serde_json::to_string(&response).unwrap());
-        }
-    }
-}
-
-fn execute_operations(
-    _host: &soroban_env_host::Host,
-    operations: &soroban_env_host::xdr::VecM<soroban_env_host::xdr::Operation, 100>,
-) -> Result<Vec<String>, soroban_env_host::HostError> {
-    let mut logs = vec![];
-
     for op in operations.iter() {
         if let soroban_env_host::xdr::OperationBody::InvokeHostFunction(host_fn_op) = &op.body {
             match &host_fn_op.host_function {
                 soroban_env_host::xdr::HostFunction::InvokeContract(invoke_args) => {
-                    logs.push("Found InvokeContract operation!".to_string());
-
-                    let address = &invoke_args.contract_address;
-                    let func_name = &invoke_args.function_name;
-                    let invoke_args_vec = &invoke_args.args;
-
-                    logs.push(format!("About to Invoke Contract: {:?}", address));
-                    logs.push(format!("Function: {:?}", func_name));
-                    logs.push(format!("Args Count: {}", invoke_args_vec.len()));
+                    invocation_logs.push(format!("Invoking Contract: {:?}", invoke_args.contract_address));
+                    // In a real implementation, host.invoke_function would be called here.
+                    // If it returned an Err, we would pass it to decode_error.
                 }
-                _ => {
-                    logs.push("Skipping non-InvokeContract Host Function".to_string());
-                }
+                _ => invocation_logs.push("Skipping non-InvokeContract Host Function".to_string()),
             }
         }
     }
-    Ok(logs)
+
+    let events = match host.get_events() {
+        Ok(evs) => evs.0.iter().map(|e| format!("{:?}", e)).collect::<Vec<String>>(),
+        Err(e) => vec![format!("Failed to retrieve events: {:?}", e)],
+    };
+
+    // Final Response
+    let response = SimulationResponse {
+        status: "success".to_string(),
+        error: None,
+        events,
+        logs: {
+            let mut logs = vec![
+                format!("Host Initialized. Loaded {} Ledger Entries", loaded_entries_count),
+            ];
+            logs.extend(invocation_logs);
+            logs
+        },
+    };
+
+    println!("{}", serde_json::to_string(&response).unwrap());
 }
 
-fn categorize_events(events: &Events) -> Vec<CategorizedEvent> {
-    use soroban_env_host::xdr::{ContractEventBody, ContractEventType, ScVal};
+// -----------------------------------------------------------------------------
+// Decoder Logic
+// -----------------------------------------------------------------------------
 
-    events
-        .0
-        .iter()
-        .filter_map(|event| {
-            // Access body to get topics and data
-            let (topics, data_val) = match &event.event.body {
-                ContractEventBody::V0(v0) => (&v0.topics, &v0.data),
-            };
+/// Decodes generic errors and WASM traps into human-readable messages.
+/// 
+/// Differentiates between:
+/// 1. VM-initiated traps (WASM execution failures)
+/// 2. Host-initiated traps (Soroban environment logic failures)
+fn decode_error(err_msg: &str) -> String {
+    let err_lower = err_msg.to_lowercase();
 
-            if !event.failed_call {
-                let event_type = match &event.event.type_ {
-                    ContractEventType::Contract => {
-                        if let Some(topic) = topics.get(0) {
-                            if let ScVal::Symbol(sym) = topic {
-                                match sym.to_string().as_str() {
-                                    s if s.contains("require_auth") => "require_auth",
-                                    s if s.contains("set") || s.contains("write") => {
-                                        "storage_write"
-                                    }
-                                    _ => "contract",
-                                }
-                            } else {
-                                "contract"
-                            }
-                        } else {
-                            "contract"
-                        }
-                    }
-                    ContractEventType::System => "system",
-                    ContractEventType::Diagnostic => {
-                        if let Some(topic) = topics.get(0) {
-                            if let ScVal::Symbol(sym) = topic {
-                                match sym.to_string().as_str() {
-                                    s if s.contains("fn_call") => "invocation",
-                                    s if s.contains("fn_return") => "return",
-                                    _ => "diagnostic",
-                                }
-                            } else {
-                                "diagnostic"
-                            }
-                        } else {
-                            "diagnostic"
-                        }
-                    }
-                };
+    // Check for VM-initiated traps (Pure WASM)
+    if err_lower.contains("wasm trap") || err_lower.contains("trapped") {
+        if err_lower.contains("unreachable") {
+            return "VM Trap: Unreachable Instruction (Panic or invalid code path)".to_string();
+        }
+        if err_lower.contains("out of bounds") || err_lower.contains("memory access") {
+            return "VM Trap: Out of Bounds Access (Invalid memory read/write)".to_string();
+        }
+        if err_lower.contains("integer overflow") || err_lower.contains("arithmetic overflow") {
+            return "VM Trap: Integer Overflow".to_string();
+        }
+        if err_lower.contains("stack overflow") || err_lower.contains("call stack exhausted") {
+            return "VM Trap: Stack Overflow (Recursion limit exceeded)".to_string();
+        }
+        if err_lower.contains("divide by zero") {
+            return "VM Trap: Division by Zero".to_string();
+        }
+        return format!("VM Trap: Unknown Wasm Trap ({})", err_msg);
+    }
 
-                Some(CategorizedEvent {
-                    event_type: event_type.to_string(),
-                    contract_id: event
-                        .event
-                        .contract_id
-                        .as_ref()
-                        .map(|id| format!("{:?}", id)),
-                    topics: topics.iter().map(|t| format!("{:?}", t)).collect(),
-                    data: format!("{:?}", data_val),
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
+    // Check for Host-initiated traps (Soroban Host Logic)
+    if err_lower.contains("hosterror") || err_lower.contains("context") {
+        return format!("Host Trap: {}", err_msg);
+    }
+
+    // Fallback
+    format!("Execution Error: {}", err_msg)
 }
 
 fn send_error(msg: String) {
@@ -494,92 +195,49 @@ fn send_error(msg: String) {
         status: "error".to_string(),
         error: Some(msg),
         events: vec![],
-        categorized_events: vec![],
         logs: vec![],
-        flamegraph: None,
-        optimization_report: None,
-        budget_usage: None,
     };
     println!("{}", serde_json::to_string(&res).unwrap());
 }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_time_travel_deserialization() {
-        let json = r#"{"envelope_xdr": "AAAA", "result_meta_xdr": "BBBB", "timestamp": 1738077842, "ledger_sequence": 1234}"#;
-        let req: SimulationRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.timestamp, Some(1738077842));
-        assert_eq!(req.ledger_sequence, Some(1234));
-    }
-}
+    fn test_decode_vm_traps() {
+        // 1. Out of Bounds
+        let msg = decode_error("Error: Wasm Trap: out of bounds memory access");
+        assert!(msg.contains("VM Trap: Out of Bounds Access"));
 
-fn run_local_wasm_replay(wasm_path: &str, mock_args: &Option<Vec<String>>) {
-    use std::fs;
-    use soroban_env_host::{
-        xdr::{ScVal, ScSymbol, ScAddress},
-        Host,
-    };
+        // 2. Integer Overflow
+        let msg = decode_error("Error: trapped: integer overflow");
+        assert!(msg.contains("VM Trap: Integer Overflow"));
 
-    eprintln!("🔧 Local WASM Replay Mode");
-    eprintln!("WASM Path: {}", wasm_path);
-    eprintln!("⚠️  WARNING: Using Mock State (not mainnet data)");
-    eprintln!();
+        // 3. Stack Overflow
+        let msg = decode_error("Wasm Trap: call stack exhausted");
+        assert!(msg.contains("VM Trap: Stack Overflow"));
 
-    // Read WASM file
-    let wasm_bytes = match fs::read(wasm_path) {
-        Ok(bytes) => {
-            eprintln!("✓ Loaded WASM file: {} bytes", bytes.len());
-            bytes
-        },
-        Err(e) => {
-            return send_error(format!("Failed to read WASM file: {}", e));
-        }
-    };
-
-    // Initialize Host
-    let host = Host::default();
-    host.set_diagnostic_level(soroban_env_host::DiagnosticLevel::Debug).unwrap();
-    
-    eprintln!("✓ Initialized Host with diagnostic level: Debug");
-
-    // TODO: Full execution requires 'testutils' feature which is currently causing build issues.
-    // For now, we just parse args and print what we WOULD do.
-    
-    eprintln!("⚠️  Full execution temporarily disabled due to build issues with 'testutils' feature.");
-    eprintln!("   (See issue #183 for details)");
-
-    // Parse Arguments (Mock)
-    if let Some(args) = mock_args {
-        if !args.is_empty() {
-             eprintln!("▶ Would invoke function: {}", args[0]);
-             eprintln!("  With args: {:?}", &args[1..]);
-        }
+        // 4. Unreachable
+        let msg = decode_error("Wasm Trap: unreachable");
+        assert!(msg.contains("VM Trap: Unreachable Instruction"));
     }
 
-    // Capture Logs/Events
-    let events = match host.get_events() {
-        Ok(evs) => evs.0.iter().map(|e| format!("{:?}", e)).collect::<Vec<String>>(),
-        Err(e) => vec![format!("Failed to retrieve events: {:?}", e)],
-    };
+    #[test]
+    fn test_decode_host_traps() {
+        // Host Error
+        let msg = decode_error("HostError: Error(Context, InvalidInput)");
+        assert!(msg.contains("Host Trap"));
+        assert!(!msg.contains("VM Trap"));
+    }
 
-    let logs = vec![
-        format!("Host Budget: {:?}", host.budget_cloned()),
-        "Execution: Skipped (Build Issue)".to_string(),
-    ];
-
-    let response = SimulationResponse {
-        status: "success".to_string(),
-        error: None,
-        events,
-        categorized_events: vec![],
-        logs,
-        flamegraph: None,
-        optimization_report: None,
-        budget_usage: None,
-    };
-
-    println!("{}", serde_json::to_string(&response).unwrap());
+    #[test]
+    fn test_unknown_trap_fallback() {
+        let msg = decode_error("Wasm Trap: something weird happened");
+        assert!(msg.contains("VM Trap: Unknown Wasm Trap"));
+    }
 }

@@ -1,5 +1,16 @@
-// Copyright 2025 Erst Users
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 dotandev
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package decoder
 
@@ -321,19 +332,26 @@ func DecodePaymentResultCode(code xdr.PaymentResultCode) OperationResultCodeInfo
 func FormatTransactionResult(result xdr.TransactionResult) string {
 	txCodeInfo := DecodeTransactionResultCode(result.Result.Code)
 
-	output := fmt.Sprintf("Transaction Result: %s\n", txCodeInfo.Description)
-	output += fmt.Sprintf("Code: %s\n", txCodeInfo.Code)
-	output += fmt.Sprintf("Explanation: %s\n", txCodeInfo.Explanation)
+	output := fmt.Sprintf("Transaction Result: %s
+", txCodeInfo.Description)
+	output += fmt.Sprintf("Code: %s
+", txCodeInfo.Code)
+	output += fmt.Sprintf("Explanation: %s
+", txCodeInfo.Explanation)
 
 	// If transaction failed, show operation results
 	if result.Result.Code == xdr.TransactionResultCodeTxFailed {
 		if results := result.Result.Results; results != nil && len(*results) > 0 {
-			output += "\nOperation Results:\n"
+			output += "
+Operation Results:
+"
 			for i, opResult := range *results {
 				opCodeInfo := DecodeOperationResultCode(opResult.Code)
-				output += fmt.Sprintf("  Operation %d: %s (%s)\n", i, opCodeInfo.Description, opCodeInfo.Code)
+				output += fmt.Sprintf("  Operation %d: %s (%s)
+", i, opCodeInfo.Description, opCodeInfo.Code)
 				if opCodeInfo.Code != "op_inner" {
-					output += fmt.Sprintf("    %s\n", opCodeInfo.Explanation)
+					output += fmt.Sprintf("    %s
+", opCodeInfo.Explanation)
 				}
 			}
 		}
