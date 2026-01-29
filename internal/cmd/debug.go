@@ -80,11 +80,20 @@ Example:
 			return fmt.Errorf("failed to initialize simulator: %w", err)
 		}
 
+		// Extract ledger entries from transaction metadata
+		ledgerEntries, err := rpc.ExtractLedgerEntriesFromMeta(txResp.ResultMetaXdr)
+		if err != nil {
+			logger.Logger.Warn("Failed to extract ledger entries from metadata", "error", err)
+			ledgerEntries = nil // Continue without ledger entries
+		} else {
+			logger.Logger.Info("Extracted ledger entries for simulation", "count", len(ledgerEntries))
+		}
+
 		// Build simulation request
 		simReq := &simulator.SimulationRequest{
 			EnvelopeXdr:   txResp.EnvelopeXdr,
 			ResultMetaXdr: txResp.ResultMetaXdr,
-			LedgerEntries: nil, // TODO: fetch ledger entries if needed
+			LedgerEntries: ledgerEntries,
 		}
 
 		fmt.Printf("Running simulation...\n")
