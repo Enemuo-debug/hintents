@@ -26,7 +26,7 @@
 
 pub mod ansi;
 pub mod loader;
-pub mod theme;
+pub mod types;
 
 pub use loader::load_theme;
-pub use theme::Theme;
+

@@ -24,10 +24,11 @@
 //
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-use crate::theme::{load_theme};
 use crate::theme::ansi::apply;
 use crate::theme::load_theme;
 
+
+#[allow(dead_code)]
 pub fn render_trace() {
     let theme = load_theme();
 

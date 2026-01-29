@@ -25,6 +25,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Theme {
     pub span: String,
     pub event: String,
