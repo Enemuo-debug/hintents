@@ -1,4 +1,7 @@
-import { createHash } from 'crypto';
+// Copyright (c) 2026 dotandev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import { sign, createHash } from 'crypto';
 import stringify from 'fast-json-stable-stringify';
 import type { AuditSigner } from './signing/types';
 

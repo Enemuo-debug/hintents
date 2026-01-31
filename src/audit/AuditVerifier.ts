@@ -1,3 +1,6 @@
+// Copyright (c) 2026 dotandev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 import { verify, createHash } from 'crypto';
 import stringify from 'fast-json-stable-stringify';
 

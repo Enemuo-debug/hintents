@@ -1,16 +1,6 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
+
 
 package cmd
 
@@ -19,11 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/localization"
+	"github.com/dotandev/hintents/internal/visualizer"
 	"github.com/dotandev/hintents/internal/rpc"
 	"github.com/dotandev/hintents/internal/security"
 	"github.com/dotandev/hintents/internal/session"
@@ -50,6 +42,7 @@ var (
 	verbose            bool
 	wasmPath           string
 	args               []string
+	demoMode           bool
 )
 
 // DebugCommand holds dependencies for the debug command
@@ -153,16 +146,19 @@ Local WASM Replay Mode:
   erst debug --network mainnet --compare-network testnet abc123...def789
 
   # Local WASM replay (no network required)
-  erst debug --wasm ./contract.wasm --args "arg1" --args "arg2"`,
+  erst debug --wasm ./contract.wasm --args "arg1" --args "arg2"
+
+  # Demo mode (test color output, no network required)
+  erst debug --demo`,
 	Args: cobra.MaximumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		// Local WASM replay mode doesn't need transaction hash
-		if wasmPath != "" {
+		// Demo mode or local WASM replay don't need transaction hash
+		if demoMode || wasmPath != "" {
 			return nil
 		}
 
 		if len(args) == 0 {
-			return fmt.Errorf("transaction hash is required when not using --wasm flag")
+			return fmt.Errorf("transaction hash is required when not using --wasm or --demo flag")
 		}
 
 		if len(args[0]) != 64 {
@@ -189,6 +185,11 @@ Local WASM Replay Mode:
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+		// Demo mode: print sample output for testing color detection (no network)
+		if demoMode {
+			return runDemoMode(cmdArgs)
+		}
+
 		// Local WASM replay mode
 		if wasmPath != "" {
 			return runLocalWasmReplay()
@@ -223,8 +224,12 @@ Local WASM Replay Mode:
 		client := rpc.NewClient(rpc.Network(networkFlag), rpcTokenFlag)
 		horizonURL := ""
 		if rpcURLFlag != "" {
-			client = rpc.NewClientWithURL(rpcURLFlag, rpc.Network(networkFlag), rpcTokenFlag)
-			horizonURL = rpcURLFlag
+			urls := strings.Split(rpcURLFlag, ",")
+			for i := range urls {
+				urls[i] = strings.TrimSpace(urls[i])
+			}
+			client = rpc.NewClientWithURLs(urls, rpc.Network(networkFlag), rpcTokenFlag)
+			horizonURL = urls[0]
 		} else {
 			switch rpc.Network(networkFlag) {
 			case rpc.Testnet:
@@ -366,7 +371,7 @@ Local WASM Replay Mode:
 		secDetector := security.NewDetector()
 		findings := secDetector.Analyze(resp.EnvelopeXdr, resp.ResultMetaXdr, lastSimResp.Events, lastSimResp.Logs)
 		if len(findings) == 0 {
-			fmt.Println("✓ No security issues detected")
+			fmt.Printf("%s No security issues detected\n", visualizer.Success())
 		} else {
 			for i, f := range findings {
 				fmt.Printf("%d. [%s] %s: %s\n", i+1, f.Severity, f.Title, f.Description)
@@ -399,8 +404,32 @@ Local WASM Replay Mode:
 	},
 }
 
+// runDemoMode prints sample output without network/WASM - for testing color detection.
+func runDemoMode(cmdArgs []string) error {
+	txHash := "5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+	if len(cmdArgs) > 0 && len(cmdArgs[0]) == 64 {
+		txHash = cmdArgs[0]
+	}
+
+	fmt.Printf("Fetching transaction: %s\n", txHash)
+	fmt.Printf("Transaction fetched successfully. Envelope size: 256 bytes\n")
+	fmt.Printf("\n--- Result for %s ---\n", networkFlag)
+	fmt.Printf("Status: success\n")
+	fmt.Printf("\nResource Usage:\n")
+	fmt.Printf("  CPU Instructions: 12345\n")
+	fmt.Printf("  Memory Bytes: 1024\n")
+	fmt.Printf("  Operations: 5\n")
+	fmt.Printf("\nEvents: 2, Logs: 3\n")
+	fmt.Printf("\n=== Security Analysis ===\n")
+	fmt.Printf("%s No security issues detected\n", visualizer.Success())
+	fmt.Printf("\nToken Flow Summary:\n")
+	fmt.Printf("  %s XLM transferred\n", visualizer.Symbol("arrow_r"))
+	fmt.Printf("\nSession ready. Use 'erst session save' to persist.\n")
+	return nil
+}
+
 func runLocalWasmReplay() error {
-	fmt.Println("⚠️  WARNING: Using Mock State (not mainnet data)")
+	fmt.Printf("%s  WARNING: Using Mock State (not mainnet data)\n", visualizer.Warning())
 	fmt.Println()
 
 	// Verify WASM file exists
@@ -408,7 +437,7 @@ func runLocalWasmReplay() error {
 		return fmt.Errorf("WASM file not found: %s", wasmPath)
 	}
 
-	fmt.Println("🔧 Local WASM Replay Mode")
+	fmt.Printf("%s Local WASM Replay Mode\n", visualizer.Symbol("wrench"))
 	fmt.Printf("WASM File: %s\n", wasmPath)
 	fmt.Printf("Arguments: %v\n", args)
 	fmt.Println()
@@ -429,20 +458,20 @@ func runLocalWasmReplay() error {
 	}
 
 	// Run simulation
-	fmt.Println("▶ Executing contract locally...")
+	fmt.Printf("%s Executing contract locally...\n", visualizer.Symbol("play"))
 	resp, err := runner.Run(req)
 	if err != nil {
-		fmt.Printf("✗ Execution failed: %v\n", err)
+		fmt.Printf("%s Execution failed: %v\n", visualizer.Error(), err)
 		return err
 	}
 
 	// Display results
 	fmt.Println()
-	fmt.Println("✓ Execution completed successfully")
+	fmt.Printf("%s Execution completed successfully\n", visualizer.Success())
 	fmt.Println()
 
 	if len(resp.Logs) > 0 {
-		fmt.Println("📋 Logs:")
+		fmt.Printf("%s Logs:\n", visualizer.Symbol("logs"))
 		for _, log := range resp.Logs {
 			fmt.Printf("  %s\n", log)
 		}
@@ -450,7 +479,7 @@ func runLocalWasmReplay() error {
 	}
 
 	if len(resp.Events) > 0 {
-		fmt.Println("📡 Events:")
+		fmt.Printf("%s Events:\n", visualizer.Symbol("events"))
 		for _, event := range resp.Events {
 			fmt.Printf("  %s\n", event)
 		}
@@ -458,7 +487,7 @@ func runLocalWasmReplay() error {
 	}
 
 	if verbose {
-		fmt.Println("🔍 Full Response:")
+		fmt.Printf("%s Full Response:\n", visualizer.Symbol("magnify"))
 		jsonBytes, _ := json.MarshalIndent(resp, "", "  ")
 		fmt.Println(string(jsonBytes))
 	}
@@ -647,6 +676,7 @@ func init() {
 	debugCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	debugCmd.Flags().StringVar(&wasmPath, "wasm", "", "Path to local WASM file for local replay (no network required)")
 	debugCmd.Flags().StringSliceVar(&args, "args", []string{}, "Mock arguments for local replay (JSON array of strings)")
+	debugCmd.Flags().BoolVar(&demoMode, "demo", false, "Print sample output (no network) - for testing color detection")
 
 	rootCmd.AddCommand(debugCmd)
 }
