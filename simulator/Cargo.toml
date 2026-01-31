@@ -1,24 +1,5 @@
-[package]
-name = "erst-simulator"
-version = "0.1.0"
-edition = "2021"
-
 [dependencies]
-soroban-env-host = "20.3.0"
-soroban-sdk = "20.3.0"
-hex = "0.4"
-serde = { version = "1.0.192", features = ["derive"] }
+# ... keep existing dependencies ...
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 serde_json = "1.0"
-clap = { version = "4.4", features = ["derive"] }
-base64 = "0.21"
-addr2line = "0.21"
-object = "0.32"
-gimli = "0.28"
-inferno = "0.11"
-jsonschema = "0.17"
-colored = "2.0.0"
-
-[[bin]]
-name = "erst-sim"
-path = "src/main.rs"
-
