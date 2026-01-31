@@ -1,27 +1,20 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
+
 
 package cmd
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/dotandev/hintents/internal/config"
 	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/localization"
 	"github.com/dotandev/hintents/internal/visualizer"
@@ -51,6 +44,7 @@ var (
 	verbose            bool
 	wasmPath           string
 	args               []string
+	noCacheFlag        bool
 	demoMode           bool
 )
 
@@ -98,11 +92,22 @@ Example:
 func (d *DebugCommand) runDebug(cmd *cobra.Command, args []string) error {
 	txHash := args[0]
 
+	token := rpcTokenFlag
+	if token == "" {
+		token = os.Getenv("ERST_RPC_TOKEN")
+	}
+	if token == "" {
+		cfg, err := config.LoadConfig()
+		if err == nil && cfg.RPCToken != "" {
+			token = cfg.RPCToken
+		}
+	}
+
 	var client *rpc.Client
 	if rpcURLFlag != "" {
-		client = rpc.NewClientWithURL(rpcURLFlag, rpc.Network(networkFlag), rpcTokenFlag)
+		client = rpc.NewClientWithURL(rpcURLFlag, rpc.Network(networkFlag), token)
 	} else {
-		client = rpc.NewClient(rpc.Network(networkFlag), rpcTokenFlag)
+		client = rpc.NewClient(rpc.Network(networkFlag), token)
 	}
 
 	fmt.Printf("Debugging transaction: %s\n", txHash)
@@ -153,6 +158,12 @@ Local WASM Replay Mode:
 
   # Debug and compare results between networks
   erst debug --network mainnet --compare-network testnet abc123...def789
+
+  # Debug and save the session
+  erst debug abc123...def789 && erst session save
+
+  # Compare execution across networks
+  erst debug --network testnet --compare-network mainnet <tx-hash>
 
   # Local WASM replay (no network required)
   erst debug --wasm ./contract.wasm --args "arg1" --args "arg2"
@@ -230,12 +241,18 @@ Local WASM Replay Mode:
 		)
 		defer span.End()
 
-		client := rpc.NewClient(rpc.Network(networkFlag), rpcTokenFlag)
-		horizonURL := ""
+		// Setup Client
+		var client *rpc.Client
+		var horizonURL string
 		if rpcURLFlag != "" {
-			client = rpc.NewClientWithURL(rpcURLFlag, rpc.Network(networkFlag), rpcTokenFlag)
-			horizonURL = rpcURLFlag
+			urls := strings.Split(rpcURLFlag, ",")
+			for i := range urls {
+				urls[i] = strings.TrimSpace(urls[i])
+			}
+			client = rpc.NewClientWithURLs(urls, rpc.Network(networkFlag), rpcTokenFlag)
+			horizonURL = urls[0]
 		} else {
+			client = rpc.NewClient(rpc.Network(networkFlag), rpcTokenFlag)
 			switch rpc.Network(networkFlag) {
 			case rpc.Testnet:
 				horizonURL = rpc.TestnetHorizonURL
@@ -246,6 +263,18 @@ Local WASM Replay Mode:
 			}
 		}
 
+		if noCacheFlag {
+			client.CacheEnabled = false
+			fmt.Println("🚫 Cache disabled by --no-cache flag")
+		}
+
+		fmt.Printf("Debugging transaction: %s\n", txHash)
+		fmt.Printf("Primary Network: %s\n", networkFlag)
+		if compareNetworkFlag != "" {
+			fmt.Printf("Comparing against Network: %s\n", compareNetworkFlag)
+		}
+
+		// Fetch transaction details
 		fmt.Printf("Fetching transaction: %s\n", txHash)
 		resp, err := client.GetTransaction(ctx, txHash)
 		if err != nil {
@@ -260,6 +289,7 @@ Local WASM Replay Mode:
 			return fmt.Errorf("failed to extract ledger keys: %w", err)
 		}
 
+		// Initialize Simulator Runner
 		runner, err := simulator.NewRunner("", tracingEnabled)
 		if err != nil {
 			return fmt.Errorf("failed to initialize simulator: %w", err)
@@ -293,10 +323,18 @@ Local WASM Replay Mode:
 						return fmt.Errorf("failed to load snapshot: %w", err)
 					}
 					ledgerEntries = snap.ToMap()
+					fmt.Printf("Loaded %d ledger entries from snapshot\n", len(ledgerEntries))
 				} else {
-					ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+					// Try to extract from metadata first, fall back to fetching
+					ledgerEntries, err = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
 					if err != nil {
-						return fmt.Errorf("failed to fetch ledger entries: %w", err)
+						logger.Logger.Warn("Failed to extract ledger entries from metadata, fetching from network", "error", err)
+						ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+						if err != nil {
+							return fmt.Errorf("failed to fetch ledger entries: %w", err)
+						}
+					} else {
+						logger.Logger.Info("Extracted ledger entries for simulation", "count", len(ledgerEntries))
 					}
 				}
 
@@ -305,9 +343,9 @@ Local WASM Replay Mode:
 					EnvelopeXdr:   resp.EnvelopeXdr,
 					ResultMetaXdr: resp.ResultMetaXdr,
 					LedgerEntries: ledgerEntries,
+					Timestamp:     ts,
 				}
 
-				var err error
 				simResp, err = runner.Run(simReq)
 				if err != nil {
 					return fmt.Errorf("simulation failed: %w", err)
@@ -322,10 +360,24 @@ Local WASM Replay Mode:
 				wg.Add(2)
 				go func() {
 					defer wg.Done()
-					entries, err := client.GetLedgerEntries(ctx, keys)
-					if err != nil {
-						primaryErr = err
-						return
+					var entries map[string]string
+					if snapshotFlag != "" {
+						snap, snapErr := snapshot.Load(snapshotFlag)
+						if snapErr != nil {
+							primaryErr = fmt.Errorf("failed to load snapshot: %w", snapErr)
+							return
+						}
+						entries = snap.ToMap()
+					} else {
+						var extractErr error
+						entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
+						if extractErr != nil {
+							entries, extractErr = client.GetLedgerEntries(ctx, keys)
+							if extractErr != nil {
+								primaryErr = extractErr
+								return
+							}
+						}
 					}
 					primaryResult, primaryErr = runner.Run(&simulator.SimulationRequest{
 						EnvelopeXdr:   resp.EnvelopeXdr,
@@ -338,14 +390,31 @@ Local WASM Replay Mode:
 				go func() {
 					defer wg.Done()
 					compareClient := rpc.NewClient(rpc.Network(compareNetworkFlag), rpcTokenFlag)
+					if noCacheFlag {
+						compareClient.CacheEnabled = false
+					}
 					entries, err := compareClient.GetLedgerEntries(ctx, keys)
 					if err != nil {
 						compareErr = err
+
+					// Try to get transaction from compare network
+					compareResp, txErr := compareClient.GetTransaction(ctx, txHash)
+					if txErr != nil {
+						compareErr = fmt.Errorf("failed to fetch transaction from %s: %w", compareNetworkFlag, txErr)
 						return
+					}
+
+					entries, extractErr := rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
+					if extractErr != nil {
+						entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
+						if extractErr != nil {
+							compareErr = extractErr
+							return
+						}
 					}
 					compareResult, compareErr = runner.Run(&simulator.SimulationRequest{
 						EnvelopeXdr:   resp.EnvelopeXdr,
-						ResultMetaXdr: resp.ResultMetaXdr,
+						ResultMetaXdr: compareResp.ResultMetaXdr,
 						LedgerEntries: entries,
 						Timestamp:     ts,
 					})
@@ -378,8 +447,35 @@ Local WASM Replay Mode:
 		if len(findings) == 0 {
 			fmt.Printf("%s No security issues detected\n", visualizer.Success())
 		} else {
-			for i, f := range findings {
-				fmt.Printf("%d. [%s] %s: %s\n", i+1, f.Severity, f.Title, f.Description)
+			verifiedCount := 0
+			heuristicCount := 0
+
+			for _, finding := range findings {
+				if finding.Type == security.FindingVerifiedRisk {
+					verifiedCount++
+				} else {
+					heuristicCount++
+				}
+			}
+
+			if verifiedCount > 0 {
+				fmt.Printf("\n⚠️  VERIFIED SECURITY RISKS: %d\n", verifiedCount)
+			}
+			if heuristicCount > 0 {
+				fmt.Printf("⚡ HEURISTIC WARNINGS: %d\n", heuristicCount)
+			}
+
+			fmt.Printf("\nFindings:\n")
+			for i, finding := range findings {
+				icon := "⚡"
+				if finding.Type == security.FindingVerifiedRisk {
+					icon = "⚠️"
+				}
+				fmt.Printf("%d. %s [%s] %s - %s\n", i+1, icon, finding.Type, finding.Severity, finding.Title)
+				fmt.Printf("   %s\n", finding.Description)
+				if finding.Evidence != "" {
+					fmt.Printf("   Evidence: %s\n", finding.Evidence)
+				}
 			}
 		}
 
@@ -394,17 +490,38 @@ Local WASM Replay Mode:
 		}
 
 		// Session Management
-		sessionData := &session.SessionData{
-			ID:            txHash[:8], // Simplified ID
-			CreatedAt:     time.Now(),
-			Network:       networkFlag,
-			HorizonURL:    horizonURL,
-			TxHash:        txHash,
+		simReq := &simulator.SimulationRequest{
 			EnvelopeXdr:   resp.EnvelopeXdr,
 			ResultMetaXdr: resp.ResultMetaXdr,
 		}
+		simReqJSON, err := json.Marshal(simReq)
+		if err != nil {
+			fmt.Printf("Warning: failed to serialize simulation data: %v\n", err)
+		}
+		simRespJSON, err := json.Marshal(lastSimResp)
+		if err != nil {
+			fmt.Printf("Warning: failed to serialize simulation results: %v\n", err)
+		}
+
+		sessionData := &session.SessionData{
+			ID:              session.GenerateID(txHash),
+			CreatedAt:       time.Now(),
+			LastAccessAt:    time.Now(),
+			Status:          "active",
+			Network:         networkFlag,
+			HorizonURL:      horizonURL,
+			TxHash:          txHash,
+			EnvelopeXdr:     resp.EnvelopeXdr,
+			ResultXdr:       resp.ResultXdr,
+			ResultMetaXdr:   resp.ResultMetaXdr,
+			SimRequestJSON:  string(simReqJSON),
+			SimResponseJSON: string(simRespJSON),
+			ErstVersion:     getErstVersion(),
+			SchemaVersion:   session.SchemaVersion,
+		}
 		SetCurrentSession(sessionData)
-		fmt.Printf("\nSession ready. Use 'erst session save' to persist.\n")
+		fmt.Printf("\nSession created: %s\n", sessionData.ID)
+		fmt.Printf("Run 'erst session save' to persist this session.\n")
 		return nil
 	},
 }
@@ -642,8 +759,12 @@ func printSimulationResult(network string, res *simulator.SimulationResponse) {
 }
 
 func diffResults(res1, res2 *simulator.SimulationResponse, net1, net2 string) {
+	fmt.Printf("\n=== Comparison: %s vs %s ===\n", net1, net2)
+
 	if res1.Status != res2.Status {
-		fmt.Printf("\n[DIFF] Status mismatch: %s vs %s\n", res1.Status, res2.Status)
+		fmt.Printf("Status Mismatch: %s (%s) vs %s (%s)\n", res1.Status, net1, res2.Status, net2)
+	} else {
+		fmt.Printf("Status Match: %s\n", res1.Status)
 	}
 
 	// Compare diagnostic events if available
@@ -667,20 +788,55 @@ func diffResults(res1, res2 *simulator.SimulationResponse, net1, net2 string) {
 				res1.BudgetUsage.MemoryBytes, res2.BudgetUsage.MemoryBytes)
 		}
 	}
+
+	// Compare Events
+	fmt.Println("\nEvent Diff:")
+	maxEvents := len(res1.Events)
+	if len(res2.Events) > maxEvents {
+		maxEvents = len(res2.Events)
+	}
+
+	for i := 0; i < maxEvents; i++ {
+		var ev1, ev2 string
+		if i < len(res1.Events) {
+			ev1 = res1.Events[i]
+		} else {
+			ev1 = "<missing>"
+		}
+
+		if i < len(res2.Events) {
+			ev2 = res2.Events[i]
+		} else {
+			ev2 = "<missing>"
+		}
+
+		if ev1 != ev2 {
+			fmt.Printf("  [%d] MISMATCH:\n", i)
+			fmt.Printf("    %s: %s\n", net1, ev1)
+			fmt.Printf("    %s: %s\n", net2, ev2)
+		}
+	}
+}
+
+// getErstVersion returns a version string for the current build
+func getErstVersion() string {
+	return "dev"
 }
 
 func init() {
 	debugCmd.Flags().StringVarP(&networkFlag, "network", "n", "mainnet", "Stellar network")
 	debugCmd.Flags().StringVar(&rpcURLFlag, "rpc-url", "", "Custom RPC URL")
+	debugCmd.Flags().StringVar(&rpcTokenFlag, "rpc-token", "", "RPC authentication token (can also use ERST_RPC_TOKEN env var)")
 	debugCmd.Flags().BoolVar(&tracingEnabled, "tracing", false, "Enable tracing")
 	debugCmd.Flags().StringVar(&otlpExporterURL, "otlp-url", "http://localhost:4318", "OTLP URL")
 	debugCmd.Flags().BoolVar(&generateTrace, "generate-trace", false, "Generate trace file")
 	debugCmd.Flags().StringVar(&traceOutputFile, "trace-output", "", "Trace output file")
-	debugCmd.Flags().StringVar(&snapshotFlag, "snapshot", "", "Snapshot file")
-	debugCmd.Flags().StringVar(&compareNetworkFlag, "compare-network", "", "Network to compare")
+	debugCmd.Flags().StringVar(&snapshotFlag, "snapshot", "", "Load state from JSON snapshot file")
+	debugCmd.Flags().StringVar(&compareNetworkFlag, "compare-network", "", "Network to compare against (testnet, mainnet, futurenet)")
 	debugCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	debugCmd.Flags().StringVar(&wasmPath, "wasm", "", "Path to local WASM file for local replay (no network required)")
 	debugCmd.Flags().StringSliceVar(&args, "args", []string{}, "Mock arguments for local replay (JSON array of strings)")
+	debugCmd.Flags().BoolVar(&noCacheFlag, "no-cache", false, "Disable local ledger state caching")
 	debugCmd.Flags().BoolVar(&demoMode, "demo", false, "Print sample output (no network) - for testing color detection")
 
 	rootCmd.AddCommand(debugCmd)

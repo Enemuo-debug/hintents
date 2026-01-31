@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+mod storage;
 // Copyright 2025 Erst Users
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,6 +20,7 @@ mod config;
 mod gas_optimizer;
 mod ipc;
 mod theme;
+mod runner;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -214,9 +216,8 @@ fn main() {
     };
 
     // Initialize Host
-    let host = soroban_env_host::Host::default();
-    host.set_diagnostic_level(soroban_env_host::DiagnosticLevel::Debug)
-        .unwrap();
+    let sim_host = runner::SimHost::new(None);
+    let host = sim_host.inner;
 
     let mut loaded_entries_count = 0;
 
@@ -518,7 +519,6 @@ fn send_error(msg: String) {
 
 #[allow(dead_code)]
 fn run_local_wasm_replay(wasm_path: &str, mock_args: &Option<Vec<String>>) {
-    use soroban_env_host::Host;
     use std::fs;
 
     eprintln!("🔧 Local WASM Replay Mode");
@@ -538,9 +538,8 @@ fn run_local_wasm_replay(wasm_path: &str, mock_args: &Option<Vec<String>>) {
     };
 
     // Initialize Host
-    let host = Host::default();
-    host.set_diagnostic_level(soroban_env_host::DiagnosticLevel::Debug)
-        .unwrap();
+    let sim_host = crate::runner::SimHost::new(None);
+    let host = sim_host.inner;
 
     eprintln!("✓ Initialized Host with diagnostic level: Debug");
 
@@ -653,3 +652,19 @@ mod tests {
         assert!(msg.contains("VM Trap: Unknown Wasm Trap"));
     }
 }
+let decoded_before = storage::decode_input_entries(&request.ledger_entries);
+
+let before_snapshot = Some(capture_storage_snapshot(&decoded_before));
+
+let after_snapshot =
+    storage::snapshot_result_storage(&decoded_before, &_result_meta);
+
+
+report := analytics.CompareStorage(beforeSnapshot, afterSnapshot)
+
+fee := analytics.CalculateStorageFee(
+	report.DeltaBytes,
+	storageFeeModel,
+)
+
+analytics.PrintStorageReport(report, fee)
