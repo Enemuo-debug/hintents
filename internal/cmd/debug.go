@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/localization"
 	"github.com/dotandev/hintents/internal/logger"
+	"github.com/dotandev/hintents/internal/lto"
 	"github.com/dotandev/hintents/internal/rpc"
 	"github.com/dotandev/hintents/internal/security"
 	"github.com/dotandev/hintents/internal/session"
@@ -610,6 +612,9 @@ func runLocalWasmReplay() error {
 	fmt.Printf("Arguments: %v\n", args)
 	fmt.Println()
 
+	// Check for LTO in the project that produced the WASM
+	checkLTOWarning(wasmPath)
+
 	// Create simulator runner
 	runner, err := simulator.NewRunner("", tracingEnabled)
 	if err != nil {
@@ -908,4 +913,30 @@ func init() {
 	debugCmd.Flags().IntVar(&watchTimeoutFlag, "watch-timeout", 30, "Timeout in seconds for watch mode")
 
 	rootCmd.AddCommand(debugCmd)
+}
+
+// checkLTOWarning searches the directory tree around a WASM file for
+// Cargo.toml files with LTO settings and prints a warning if found.
+// It searches the WASM file's parent directory and up to two levels up
+// to find the project root.
+func checkLTOWarning(wasmFilePath string) {
+	dir := filepath.Dir(wasmFilePath)
+
+	// Walk up to 3 levels to find Cargo.toml files
+	for i := 0; i < 3; i++ {
+		results, err := lto.CheckProjectDir(dir)
+		if err != nil {
+			logger.Logger.Debug("LTO check failed", "dir", dir, "error", err)
+			break
+		}
+		if lto.HasLTO(results) {
+			fmt.Fprintf(os.Stderr, "\n%s\n", lto.FormatWarnings(results))
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
 }
