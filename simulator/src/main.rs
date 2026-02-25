@@ -5,6 +5,7 @@ mod config;
 mod gas_optimizer;
 mod runner;
 mod source_mapper;
+mod vm;
 mod types;
 
 use crate::gas_optimizer::{BudgetMetrics, GasOptimizationAdvisor, CPU_LIMIT, MEMORY_LIMIT};
@@ -244,6 +245,9 @@ fn main() {
     let source_mapper = if let Some(wasm_base64) = &request.contract_wasm {
         match base64::engine::general_purpose::STANDARD.decode(wasm_base64) {
             Ok(wasm_bytes) => {
+                if let Err(e) = vm::enforce_soroban_compatibility(&wasm_bytes) {
+                    return send_error(format!("Strict VM enforcement failed: {}", e));
+                }
                 let mapper = SourceMapper::new(wasm_bytes);
                 if mapper.has_debug_symbols() {
                     eprintln!("Debug symbols found in WASM");
@@ -646,8 +650,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_vm_traps() {
-        let msg = decode_error("Error: Wasm Trap: out of bounds memory access");
-        assert!(msg.contains("VM Trap: Out of Bounds Access"));
+    fn test_enforce_soroban_compatibility_rejects_floats() {
+        let wat = r#"
+            (module
+                (func (export "f") (result f32)
+                    f32.const 0.0
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("failed to compile WAT");
+        let result = vm::enforce_soroban_compatibility(&wasm);
+        assert!(result.is_err());
     }
 }
