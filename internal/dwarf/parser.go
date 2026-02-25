@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 var (
@@ -28,14 +29,14 @@ var (
 
 // LocalVar represents a local variable at a specific program location
 type LocalVar struct {
-	Name         string      // Variable name (may be mangled)
-	DemangledName string    // Demangled name for display
-	Type         string      // Type name
-	Location     string      // DWARF location description
-	Value        interface{} // Computed value (if available)
-	Address      uint64      // Memory address (if applicable)
-	StartLine    int         // Source line where variable is in scope
-	EndLine      int         // Source line where variable goes out of scope
+	Name          string      // Variable name (may be mangled)
+	DemangledName string      // Demangled name for display
+	Type          string      // Type name
+	Location      string      // DWARF location description
+	Value         interface{} // Computed value (if available)
+	Address       uint64      // Memory address (if applicable)
+	StartLine     int         // Source line where variable is in scope
+	EndLine       int         // Source line where variable goes out of scope
 }
 
 // SubprogramInfo represents a function/subprogram's debug information
@@ -68,8 +69,18 @@ type Frame struct {
 // Parser handles DWARF debug information extraction
 type Parser struct {
 	data       *dwarf.Data
+	unit       *dwarf.Unit
 	reader     *dwarf.Reader
 	binaryType string // "wasm", "elf", "macho", "pe"
+}
+
+// NewParserFromFile creates a new DWARF parser from a file path
+func NewParserFromFile(path string) (*Parser, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+	return NewParser(data)
 }
 
 // NewParser creates a new DWARF parser from a binary
@@ -110,12 +121,8 @@ func NewParser(data []byte) (*Parser, error) {
 // parseWASM parses DWARF info from a WASM binary
 func parseWASM(data []byte) (*Parser, error) {
 	// For WASM, we need to look for custom sections starting with ".debug_"
-	// WASM doesn't have native DWARF support, but compilers often embed
-	// DWARF info as custom sections
-	
-	// Try to find debug sections in WASM
 	sections := parseWASMSections(data)
-	
+
 	var dwarfData *dwarf.Data
 	var err error
 	
@@ -126,10 +133,19 @@ func parseWASM(data []byte) (*Parser, error) {
 		ranges, _ := sections[".debug_ranges"]
 		str, _ := sections[".debug_str"]
 		dwarfData, err = dwarf.New(abbrev, nil, nil, infoSection, line, nil, ranges, str)
+
+	// Extract primary DWARF sections from WASM custom sections
+	infoSec := sections[".debug_info"]
+	lineSec := sections[".debug_line"]
+	strSec := sections[".debug_str"]
+	abbrevSec := sections[".debug_abbrev"]
+	rangesSec := sections[".debug_ranges"]
+
+	if infoSec != nil {
+		dwarfData, err = dwarf.New(infoSec, abbrevSec, nil, strSec, lineSec, nil, rangesSec, nil)
 	}
 
 	if dwarfData == nil || err != nil {
-		// No DWARF info in WASM
 		return nil, ErrNoDebugInfo
 	}
 
@@ -205,7 +221,6 @@ func readULEB128(buf []byte) (uint64, int) {
 
 // parseELF parses DWARF info from an ELF binary
 func parseELF(data []byte) (*Parser, error) {
-	// Create a temporary file to use debug/elf package
 	elfFile, err := elf.NewFile(bytesToReader(data))
 	if err != nil {
 		return nil, ErrInvalidWASM
@@ -261,7 +276,6 @@ func parsePE(data []byte) (*Parser, error) {
 // bytesToReader converts a byte slice to an io.ReaderAt
 type bytesReader struct {
 	data []byte
-	off  int
 }
 
 func (r *bytesReader) ReadAt(p []byte, off int64) (n int, err error) {
@@ -287,10 +301,7 @@ func (p *Parser) GetSubprograms() ([]SubprogramInfo, error) {
 	reader := p.data.Reader()
 	for {
 		entry, err := reader.Next()
-		if err != nil {
-			break
-		}
-		if entry == nil {
+		if err != nil || entry == nil {
 			break
 		}
 
@@ -309,39 +320,32 @@ func (p *Parser) GetSubprograms() ([]SubprogramInfo, error) {
 func (p *Parser) extractSubprogram(entry *dwarf.Entry) (SubprogramInfo, error) {
 	info := SubprogramInfo{}
 
-	// Extract name
 	if name, ok := entry.Val(dwarf.AttrName).(string); ok {
 		info.Name = name
 	}
 
-	// Extract demangled name (if available)
 	if demangled, ok := entry.Val(dwarf.AttrLinkageName).(string); ok {
 		info.DemangledName = demangled
 	} else {
 		info.DemangledName = nameDemangle(info.Name)
 	}
 
-	// Extract low PC
 	if lowPC, ok := entry.Val(dwarf.AttrLowpc).(uint64); ok {
 		info.LowPC = lowPC
 	}
 
-	// Extract high PC
 	if highPC, ok := entry.Val(dwarf.AttrHighpc).(uint64); ok {
 		info.HighPC = highPC
 	}
 
-	// Extract line number
 	if line, ok := entry.Val(dwarf.AttrDeclLine).(int64); ok {
 		info.Line = int(line)
 	}
 
-	// Extract file
 	if file, ok := entry.Val(dwarf.AttrDeclFile).(string); ok {
 		info.File = file
 	}
 
-	// Get local variables for this subprogram
 	info.LocalVariables = p.getLocalVariables(entry)
 
 	return info, nil
@@ -398,23 +402,19 @@ func (p *Parser) getLocalVariables(subprog *dwarf.Entry) []LocalVar {
 func (p *Parser) extractLocalVar(entry *dwarf.Entry) LocalVar {
 	local := LocalVar{}
 
-	// Get variable name
 	if name, ok := entry.Val(dwarf.AttrName).(string); ok {
 		local.Name = name
 		local.DemangledName = nameDemangle(name)
 	}
 
-	// Get type
 	if typ, ok := entry.Val(dwarf.AttrType).(dwarf.Offset); ok {
 		local.Type = p.getTypeName(typ)
 	}
 
-	// Get location
 	if loc, ok := entry.Val(dwarf.AttrLocation).([]byte); ok {
 		local.Location = formatLocation(loc)
 	}
 
-	// Get line number
 	if line, ok := entry.Val(dwarf.AttrDeclLine).(int64); ok {
 		local.StartLine = int(line)
 		local.EndLine = int(line)
@@ -434,23 +434,7 @@ func (p *Parser) getTypeName(typeOffset dwarf.Offset) string {
 
 		if entry.Offset == typeOffset {
 			switch entry.Tag {
-			case dwarf.TagTypedef:
-				if name, ok := entry.Val(dwarf.AttrName).(string); ok {
-					return name
-				}
-			case dwarf.TagBaseType:
-				if name, ok := entry.Val(dwarf.AttrName).(string); ok {
-					return name
-				}
-			case dwarf.TagStructType:
-				if name, ok := entry.Val(dwarf.AttrName).(string); ok {
-					return name
-				}
-			case dwarf.TagUnionType:
-				if name, ok := entry.Val(dwarf.AttrName).(string); ok {
-					return name
-				}
-			case dwarf.TagEnumerationType:
+			case dwarf.TagTypedef, dwarf.TagBaseType, dwarf.TagStructType, dwarf.TagUnionType, dwarf.TagEnumerationType:
 				if name, ok := entry.Val(dwarf.AttrName).(string); ok {
 					return name
 				}
@@ -493,10 +477,9 @@ func (p *Parser) FindLocalVarsAt(addr uint64) ([]LocalVar, error) {
 		return nil, err
 	}
 
-	// Filter variables that are in scope at this address
 	var inScope []LocalVar
 	for _, v := range subprogram.LocalVariables {
-		if addr >= uint64(v.StartLine) { // Simplified check
+		if addr >= uint64(v.StartLine) { 
 			inScope = append(inScope, v)
 		}
 	}
@@ -514,7 +497,6 @@ func (p *Parser) GetSourceLocation(addr uint64) (*SourceLocation, error) {
 		return nil, ErrNoDebugInfo
 	}
 
-	// Use the line information from DWARF
 	reader := p.data.Reader()
 	for {
 		entry, err := reader.Next()
@@ -608,9 +590,7 @@ func formatLocation(loc []byte) string {
 
 // nameDemangle attempts to demangle a name (simplified version)
 func nameDemangle(name string) string {
-	// Basic Rust demangling: _RNv... -> original name
 	if len(name) > 4 && name[:4] == "_RNv" {
-		// For now, just return the original
 		return name
 	}
 	return name
