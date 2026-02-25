@@ -33,7 +33,6 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"go.opentelemetry.io/otel/attribute"
 )
-
 var (
 	networkFlag         string
 	rpcURLFlag          string
