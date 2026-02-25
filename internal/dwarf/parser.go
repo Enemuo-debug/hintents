@@ -545,3 +545,12 @@ func (p *Parser) HasDebugInfo() bool {
 func (p *Parser) BinaryType() string {
 	return p.binaryType
 }
+
+// NewParserFromFile creates a new DWARF parser from a filesystem path.
+func NewParserFromFile(path string) (*Parser, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	return NewParser(data)
+}
